@@ -1,0 +1,15 @@
+# ── Core Django ──────────────────────────────────────────────────────────────
+django>=5.0
+djangorestframework>=3.15.0
+djangorestframework-simplejwt>=5.3.0
+django-cors-headers>=4.3.0
+pillow>=10.0.0
+
+# ── AI / ML — GPU-accelerated (Python 3.12 + CUDA 12.1) ──────────────────────
+# torch is installed locally from:
+#   C:\Users\david\Downloads\torch-2.5.1+cu121-cp312-cp312-win_amd64.whl
+# Use: py -3.12 -m pip install "C:\Users\david\Downloads\torch-2.5.1+cu121-cp312-cp312-win_amd64.whl"
+ultralytics>=8.0.0
+torchvision>=0.20.0
+numpy>=1.24.0
+opencv-python>=4.8.0
