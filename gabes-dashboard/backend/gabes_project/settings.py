@@ -24,6 +24,7 @@ INSTALLED_APPS = [
     'accounts',
     'logs_app',
     'ai_inference',
+    'chat_app',
 ]
 
 MIDDLEWARE = [
@@ -115,3 +116,7 @@ CORS_ALLOWED_ORIGINS = [
     'http://127.0.0.1:3000',
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+# ─── Gemini AI ────────────────────────────────────────────────────────────────
+# Get a free key at https://aistudio.google.com/app/apikey
+GEMINI_API_KEY = 'AIzaSyCRTNNyNriQQ2ujV5U1YaCXfRl-1E-axAs'

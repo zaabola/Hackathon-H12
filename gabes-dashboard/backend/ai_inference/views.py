@@ -33,7 +33,7 @@ from PIL import Image
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
-from accounts.permissions import IsWorkerOrAdmin
+from accounts.permissions import IsWorkerOrAdmin, IsFarmerOrAdmin
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +196,8 @@ class PPEAnalyzeView(APIView):
         if gasmask_model:
             for box in gasmask_model(frame, verbose=False)[0].boxes:
                 conf = float(box.conf[0])
-                if conf < 0.25:
+                # Raised from 0.25 to 0.75 to prevent false positive gas mask detections
+                if conf < 0.75:
                     continue
                 cls_id = int(box.cls[0])
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -727,84 +728,432 @@ def _draw_box_pil(draw, box, label, conf, color, w, h):
     draw.text((x1 + 4, ly1 + 3), txt, fill=(10, 10, 10))
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Land — UNet Segmentation + CSV Crop Recommendation
+# ─────────────────────────────────────────────────────────────────────────────
+
+import csv
+import torch
+import torchvision.transforms.functional as TVF
+
+# ── Land class definitions (matching training labels) ─────────────────────────
+LAND_CLASSES = {
+    0: {"name": "urban_land",       "color": (0, 255, 255),   "label": "Urban / Industrial"},
+    1: {"name": "agriculture_land", "color": (255, 255, 0),   "label": "Agriculture Land"},
+    2: {"name": "rangeland",        "color": (255, 0, 255),   "label": "Rangeland"},
+    3: {"name": "forest_land",      "color": (0, 255, 0),     "label": "Forest / Vegetation"},
+    4: {"name": "water",            "color": (0, 0, 255),     "label": "Water Body"},
+    5: {"name": "barren_land",      "color": (255, 255, 255), "label": "Barren / Saline Land"},
+    6: {"name": "unknown",          "color": (80, 80, 80),    "label": "Unknown"},
+}
+LAND_IMAGE_SIZE = (512, 512)
+NUM_LAND_CLASSES = 7
+
+# Dominant land class → detected land type for CSV lookup
+CLASS_TO_LANDTYPE = {
+    "urban_land":       "urban",
+    "agriculture_land": "agriculture",
+    "rangeland":        "rangeland",
+    "forest_land":      "forest",
+    "water":            "water",
+    "barren_land":      "barren",
+    "unknown":          "unknown",
+}
+
+# Suitability of each land type for agriculture
+LAND_SUITABILITY = {
+    "agriculture": "high",
+    "rangeland":   "medium",
+    "forest":      "medium",
+    "barren":      "low",
+    "water":       "unsuitable",
+    "urban":       "unsuitable",
+    "unknown":     "unknown",
+}
+
+
+def _load_land_model():
+    """Load the UNet model with ResNet34 encoder (lazy + cached)."""
+    if "land_unet" in _model_cache:
+        return _model_cache["land_unet"]
+    with _model_lock:
+        if "land_unet" in _model_cache:
+            return _model_cache["land_unet"]
+        # Prefer unet_finetuned.pth exactly like the custom script 
+        path = MODELS_DIR / "unet_finetuned.pth"
+        if not path.exists():
+            path = MODELS_DIR / "land_regeneration.pth"
+            
+        if not path.exists():
+            logger.warning("[Land] Model weights not found")
+            _model_cache["land_unet"] = None
+            return None
+        try:
+            import segmentation_models_pytorch as smp
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            model = smp.Unet(
+                encoder_name="resnet34",
+                encoder_weights=None,
+                in_channels=3,
+                classes=NUM_LAND_CLASSES,
+            )
+            model.load_state_dict(torch.load(str(path), map_location=device))
+            model.to(device)
+            model.eval()
+            _model_cache["land_unet"] = model
+            _model_cache["land_device"] = device
+            logger.info("[Land] UNet model loaded successfully")
+            return model
+        except Exception as e:
+            logger.error(f"[Land] Failed to load UNet: {e}")
+            _model_cache["land_unet"] = None
+            return None
+
+
+def _mask_to_rgb(mask_idx: np.ndarray) -> np.ndarray:
+    """Convert class-index mask to RGB image."""
+    h, w = mask_idx.shape
+    rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    for idx, cfg in LAND_CLASSES.items():
+        r, g, b = cfg["color"]
+        rgb[mask_idx == idx] = [r, g, b]
+    return rgb
+
+
+def _load_crop_csv() -> list:
+    """Load the CSV once and return rows as list of dicts."""
+    if "crop_csv" in _model_cache:
+        return _model_cache["crop_csv"]
+    path = MODELS_DIR / "gabes_crop_mapping.csv"
+    if not path.exists():
+        _model_cache["crop_csv"] = []
+        return []
+    rows = []
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            rows.append(row)
+    _model_cache["crop_csv"] = rows
+    return rows
+
+
+def _get_crop_recommendations(zone: str, num: int = 5) -> list:
+    """Return top N high-suitability crops for the given zone."""
+    rows = _load_crop_csv()
+    matches = [r for r in rows if r["zone"].lower() == zone.lower()
+               and r.get("suitability", "").lower() == "high"]
+    if not matches:
+        matches = [r for r in rows if r["zone"].lower() == zone.lower()]
+    # deduplicate by crop name
+    seen, result = set(), []
+    for r in matches:
+        if r["crop"] not in seen:
+            seen.add(r["crop"])
+            result.append(r)
+        if len(result) >= num:
+            break
+    return result
+
+
+def _generate_explanation(zone: str, detected_land: str, dominant_class: str,
+                           soil_type: str, salinity: str, top_crop: dict,
+                           class_breakdown: dict, land_size_m2: float) -> str:
+    """
+    Generate a structured AI explanation following the prompt template.
+    Output mirrors the exact format the user specified.
+    """
+    suitability = LAND_SUITABILITY.get(detected_land, "unknown")
+    crop_name = top_crop.get("crop", "—") if top_crop else "—"
+    water_need = float(top_crop.get("water_need_l_per_m2_day", 0)) if top_crop else 0
+    total_water = round(water_need * land_size_m2, 1) if land_size_m2 > 0 else None
+
+    zone_display = zone.replace("_", " ").title()
+    dominant_label = LAND_CLASSES.get(
+        next((k for k, v in LAND_CLASSES.items() if v["name"] == dominant_class), 0), {}
+    ).get("label", dominant_class)
+
+    # Summary sentence
+    if suitability == "high":
+        summary = (f"The satellite scan of {zone_display} reveals predominantly "
+                   f"{dominant_label.lower()} — excellent conditions for sustainable farming.")
+    elif suitability == "medium":
+        summary = (f"The scan shows {dominant_label.lower()} in {zone_display}. "
+                   f"Farming is possible with some preparation.")
+    elif suitability == "low":
+        summary = (f"The scan detects significant barren or degraded land in {zone_display}. "
+                   f"Rehabilitation is needed before cultivation.")
+    else:
+        summary = (f"The scan of {zone_display} reveals {dominant_label.lower()} — "
+                   f"this area is not suitable for agriculture at this time.")
+
+    # Build breakdown line
+    top_classes = sorted(class_breakdown.items(), key=lambda x: -x[1])[:3]
+    breakdown_str = " | ".join(
+        f"{LAND_CLASSES.get(k, {}).get('label', k)}: {v:.1f}%"
+        for k, v in top_classes if v > 0.5
+    )
+
+    # Soil description
+    soil_map = {
+        "alluvial_fertile": "Rich alluvial soil — high water retention, excellent for crops",
+        "arid_sandy":       "Sandy, arid soil — low water retention, drought-resistant crops preferred",
+        "halomorphic":      "Salt-affected halomorphic soil — only salt-tolerant crops recommended",
+        "rocky":            "Rocky terrain — limited depth, terrace farming possible",
+        "mixed":            "Mixed soil composition — moderate fertility",
+    }
+    soil_desc = soil_map.get(soil_type, f"{soil_type} soil")
+    salinity_desc = {
+        "low":      "Salinity is within normal range — no restrictions",
+        "medium":   "Moderate salinity — choose salt-tolerant varieties",
+        "high":     "High salinity — only halophyte crops advisable",
+        "very_high":"Very high salinity — land requires desalination treatment first",
+    }.get(salinity, f"Salinity level: {salinity}")
+
+    # Crop reason
+    crop_reasons = {
+        "olive":       "Extremely drought-tolerant, thrives in Mediterranean and arid soils",
+        "date palm":   "Native to arid Saharan zones, highly productive with minimal water in Gabes",
+        "cactus":      "Requires almost no water — ideal for very dry or previously barren land",
+        "moringa":     "Fast-growing, high-value, tolerates poor soil and drought conditions",
+        "barley":      "One of the most salt-tolerant cereal crops, low water demand",
+        "fig":         "Deep-rooted, drought-resistant, adapts well to Gabes climate",
+        "pistachio":   "Heat and drought tolerant, high commercial value in this region",
+        "pomegranate": "Excellent salt tolerance, low water needs, suited to the Gabes oasis",
+        "aloe vera":   "Succulent with minimal water needs — supports land rehabilitation",
+        "sesame":      "Drought-resistant, short growing season, good for sandy soils",
+    }
+    crop_reason = crop_reasons.get(crop_name.lower(),
+                                   "Well-suited to this zone's climate and soil conditions")
+
+    # Water note
+    water_line = f"{water_need} L/m²/day"
+    if total_water:
+        water_line += f" · Total for your {int(land_size_m2):,} m² plot: ~{total_water:,.0f} L/day"
+
+    # Warning
+    warning = ""
+    if suitability in ("low", "unsuitable"):
+        warning = (
+            "\n⚠️ Advice: This land type requires treatment before farming. "
+            "Consider soil remediation, halophyte cover crops, or consulting a local agronomist "
+            "before any investment."
+        )
+    elif salinity in ("high", "very_high"):
+        warning = (
+            "\n⚠️ Advice: High salinity detected. Use drip irrigation to avoid salt accumulation "
+            "and select certified salt-tolerant seed varieties only."
+        )
+
+    lines = [
+        summary,
+        "",
+        f"📍 Location: {zone_display}",
+        f"🌍 Land condition: {dominant_label} ({breakdown_str})",
+        f"🌱 Soil analysis: {soil_desc}. {salinity_desc}.",
+        f"🌳 Recommended crop: {crop_name.title()} — {crop_reason}.",
+        f"💧 Water requirement: {water_line}.",
+    ]
+    if warning:
+        lines.append(warning)
+
+    return "\n".join(lines)
+
+
 class LandAnalyzeView(APIView):
-    permission_classes = [IsWorkerOrAdmin]
+    """
+    POST /api/land/analyze/
+
+    Full pipeline:
+      1. UNet + ResNet34 segmentation on the uploaded/streamed image
+      2. Pixel-level class breakdown (7 land types)
+      3. CSV crop recommendation for the selected Gabes zone
+      4. Structured AI explanation (farmer-friendly, follows the prompt template)
+
+    Access: approved farmers and admins only.
+    Workers / technicians cannot access land analysis.
+
+    Form fields:
+      - file / frame : image
+      - zone         : Gabes zone name (e.g. Gabes_oasis)
+      - land_size_m2 : optional float (plot size for water calculation)
+    """
+    permission_classes = [IsFarmerOrAdmin]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
-        # Get PIL image
+        # ── Parse image ──────────────────────────────────────────────────────
         if "file" in request.FILES:
             try:
-                img = PILImage.open(request.FILES["file"]).convert("RGB")
+                data = request.FILES["file"].read()
+                arr = np.frombuffer(data, np.uint8)
+                bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if bgr is None: raise ValueError("Could not decode image")
             except Exception as e:
                 return Response({"error": str(e)}, status=400)
         else:
-            b64 = request.data.get("frame")
+            b64 = request.data.get("frame", "")
             if not b64:
                 return Response({"error": "Provide 'file' or 'frame'."}, status=400)
             try:
-                if "," in b64:
-                    b64 = b64.split(",")[1]
-                img = PILImage.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+                if "," in b64: b64 = b64.split(",")[1]
+                arr = np.frombuffer(base64.b64decode(b64), np.uint8)
+                bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if bgr is None: raise ValueError("Could not decode base64 image")
             except Exception as e:
                 return Response({"error": str(e)}, status=400)
 
-        # Simple stub analysis (land model not provided)
-        healthy = round(random.uniform(15, 55), 1)
-        dead    = round(random.uniform(15, 50), 1)
-        if healthy + dead > 100:
-            factor = 100 / (healthy + dead)
-            healthy = round(healthy * factor, 1)
-            dead    = round(dead * factor, 1)
-        marginal = round(100 - healthy - dead, 1)
-        regen_score = min(100, max(0, int(healthy * 1.5 + marginal * 0.5)))
+        # ── Parse form params ────────────────────────────────────────────────
+        zone = request.data.get("zone", "Gabes_oasis")
+        try:
+            land_size_m2 = float(request.data.get("land_size_m2", 0))
+        except (ValueError, TypeError):
+            land_size_m2 = 0.0
 
-        zones = []
-        for i in range(random.randint(3, 8)):
-            zone_type = random.choices(
-                ["healthy", "marginal", "dead"],
-                weights=[max(1, healthy), max(1, marginal), max(1, dead)],
-            )[0]
-            zones.append({
-                "zone_id":    i + 1,
-                "type":       zone_type,
-                "area_km2":   round(random.uniform(0.5, 15.0), 2),
-                "center_lat": round(33.88 + random.uniform(-0.22, 0.22), 5),
-                "center_lng": round(10.10 + random.uniform(-0.22, 0.22), 5),
-            })
+        # ── Load model and run segmentation ──────────────────────────────────
+        model = _load_land_model()
+        device = _model_cache.get("land_device", torch.device("cpu"))
 
-        # Annotate image
-        draw = ImageDraw.Draw(img)
-        score_color = (
-            (34, 197, 94) if regen_score >= 65
-            else (234, 179, 8) if regen_score >= 35
-            else (239, 68, 68)
+        orig_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        resized = cv2.resize(orig_rgb, LAND_IMAGE_SIZE)
+
+        pred_mask  = None
+        inference_mode = "demo_stub"
+
+        if model is not None:
+            try:
+                # Normalize exactly as during training (ImageNet stats)
+                tensor = TVF.to_tensor(resized)
+                tensor = TVF.normalize(tensor,
+                                       mean=[0.485, 0.456, 0.406],
+                                       std=[0.229, 0.224, 0.225])
+                inp = tensor.unsqueeze(0).to(device)
+
+                with torch.no_grad():
+                    out = model(inp)
+                    
+                    # Boost agriculture confidence (class 1) moderately 
+                    out[:, 1, :, :] += 2.0
+                    
+                    # Boost forest confidence (class 3) stronger
+                    out[:, 3, :, :] += 4.0
+                    
+                    # Lower water body confidence (class 4) but dialled back slightly more
+                    out[:, 4, :, :] -= 1.5
+                    
+                    # Add a stronger boost for barren land (class 5)
+                    out[:, 5, :, :] += 1.5
+                    
+                    pred_mask = torch.argmax(out, dim=1).squeeze(0).cpu().numpy()
+
+                inference_mode = "unet_real"
+            except Exception as e:
+                logger.error(f"[Land] UNet inference failed: {e}")
+                pred_mask = None
+
+        if pred_mask is None:
+            # Fallback: keep exactly as original before tweaks
+            h, w = LAND_IMAGE_SIZE
+            pred_mask = np.zeros((h, w), dtype=np.int64)
+            gray = cv2.cvtColor(resized, cv2.COLOR_RGB2GRAY)
+            g_ch = resized[:, :, 1]
+            
+            pred_mask[g_ch > 120] = 1   # agriculture
+            pred_mask[(gray < 60)] = 5  # barren
+            inference_mode = "demo_stub"
+
+        # ── Class breakdown ──────────────────────────────────────────────────
+        total_pixels = pred_mask.size
+        class_breakdown = {}
+        for cls_id in range(NUM_LAND_CLASSES):
+            pct = float((pred_mask == cls_id).sum()) / total_pixels * 100
+            class_breakdown[cls_id] = round(pct, 2)
+
+        # Dominant class (excluding "unknown")
+        dominant_cls = max(
+            (k for k in class_breakdown if k != 6),
+            key=lambda k: class_breakdown[k]
         )
-        iw, ih = img.size
-        for d in range(5):
-            draw.rectangle([d, d, iw - d, ih - d], outline=score_color)
-        draw.rectangle([0, 0, 380, 28], fill=(0, 0, 0))
-        draw.text((6, 6),
-                  f"Regen Score: {regen_score}/100  |  Healthy: {healthy}%  Dead: {dead}%",
-                  fill=score_color)
+        dominant_name = LAND_CLASSES[dominant_cls]["name"]
+        dominant_label = LAND_CLASSES[dominant_cls]["label"]
+        detected_land  = CLASS_TO_LANDTYPE.get(dominant_name, "unknown")
+
+        # ── Build predicted mask RGB & overlay ───────────────────────────────
+        pred_rgb = _mask_to_rgb(pred_mask)                    # RGB colour mask
+        # Overlay: 60% original + 40% mask (matches original script)
+        overlay  = cv2.addWeighted(resized, 0.6,
+                                   cv2.cvtColor(pred_rgb, cv2.COLOR_RGB2BGR), 0.4, 0)
+        overlay  = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+
+        # Add legend strip at bottom of overlay
+        legend_h = 28
+        legend = np.zeros((legend_h, LAND_IMAGE_SIZE[0], 3), dtype=np.uint8)
+        top_n = sorted(class_breakdown.items(), key=lambda x: -x[1])[:4]
+        block_w = LAND_IMAGE_SIZE[0] // max(len(top_n), 1)
+        for i, (cls_id, pct) in enumerate(top_n):
+            r, g, b = LAND_CLASSES[cls_id]["color"]
+            legend[0:, i*block_w:(i+1)*block_w] = [r, g, b]
+        overlay_with_legend = np.vstack([overlay, legend])
+
+        # ── CSV crop lookup ──────────────────────────────────────────────────
+        zone_rows = _get_crop_recommendations(zone, num=5)
+
+        # Get soil / salinity from first matching row
+        soil_type = zone_rows[0]["soil_type"]  if zone_rows else "unknown"
+        salinity  = zone_rows[0]["salinity"]   if zone_rows else "unknown"
+        top_crop  = zone_rows[0]               if zone_rows else {}
+
+        # Serialisable crop list
+        crop_list = [
+            {
+                "crop":       r["crop"],
+                "water_need": float(r["water_need_l_per_m2_day"]),
+                "suitability": r.get("suitability", "high"),
+            }
+            for r in zone_rows
+        ]
+
+        # ── AI explanation ───────────────────────────────────────────────────
+        explanation = _generate_explanation(
+            zone=zone,
+            detected_land=detected_land,
+            dominant_class=dominant_name,
+            soil_type=soil_type,
+            salinity=salinity,
+            top_crop=top_crop,
+            class_breakdown=class_breakdown,
+            land_size_m2=land_size_m2,
+        )
+
+        # ── Encode all three views as base64 ─────────────────────────────────
+        def _enc(arr_rgb):
+            bgr_out = cv2.cvtColor(arr_rgb.astype(np.uint8), cv2.COLOR_RGB2BGR)
+            _, buf = cv2.imencode(".jpg", bgr_out, [cv2.IMWRITE_JPEG_QUALITY, 82])
+            return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()
 
         return Response({
-            "module":         "land",
-            "status":         "analyzed",
-            "healthy_pct":    healthy,
-            "marginal_pct":   marginal,
-            "dead_pct":       dead,
-            "regeneration_score": regen_score,
-            "total_area_analyzed_km2": round(sum(z["area_km2"] for z in zones), 2),
-            "zones":          zones,
-            "recommendation": (
-                "High regeneration potential — prioritize oasis restoration."
-                if regen_score > 60 else
-                "Moderate potential — soil remediation advised before planting."
-                if regen_score > 30 else
-                "Critical saline degradation — immediate intervention required."
-            ),
-            "annotated_image": _pil_to_b64(img),
-            "inference_mode": "demo_stub",
-            "processed_at":   time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "module":           "land",
+            "status":           "analyzed",
+            "detected_land":    detected_land,
+            "dominant_class":   dominant_label,
+            "class_breakdown":  {
+                LAND_CLASSES[k]["label"]: v
+                for k, v in class_breakdown.items() if v > 0.1
+            },
+            "zone":             zone,
+            "soil_type":        soil_type,
+            "salinity":         salinity,
+            "crop_recommendations": crop_list,
+            "top_crop":         top_crop.get("crop", "—"),
+            "water_need_per_m2": float(top_crop.get("water_need_l_per_m2_day", 0)) if top_crop else 0,
+            "total_water_liters": round(float(top_crop.get("water_need_l_per_m2_day", 0)) * land_size_m2, 1) if land_size_m2 and top_crop else None,
+            "land_size_m2":     land_size_m2,
+            "explanation":      explanation,
+            # Three image panels (matches original script 1-2-3 layout)
+            "original_image":   _enc(resized),
+            "mask_image":       _enc(pred_rgb),
+            "annotated_image":  _enc(overlay_with_legend),
+            "inference_mode":   inference_mode,
+            "processed_at":     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
+
+

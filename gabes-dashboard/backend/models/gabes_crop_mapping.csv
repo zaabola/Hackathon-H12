@@ -1,0 +1,95 @@
+zone,soil_type,salinity,crop,water_need_l_per_m2_day,suitability
+Gabes_oasis,alluvial_fertile,low,olive,3.5,high
+Gabes_oasis,alluvial_fertile,low,pistachio,2.8,high
+Gabes_oasis,alluvial_fertile,low,date palm,5.5,high
+Gabes_oasis,alluvial_fertile,low,barley,3.5,high
+Gabes_oasis,alluvial_fertile,low,wheat,4.5,high
+Gabes_oasis,alluvial_fertile,low,alfalfa,7.5,medium
+Gabes_oasis,alluvial_fertile,low,sorghum,4.0,high
+Gabes_oasis,alluvial_fertile,low,moringa,3.8,high
+Gabes_oasis,alluvial_fertile,low,neem,4.2,high
+Gabes_oasis,alluvial_fertile,low,aloe vera,1.5,high
+Gabes_oasis,alluvial_fertile,low,pomegranate,4.0,high
+Gabes_oasis,alluvial_fertile,low,fig,3.5,high
+Gabes_oasis,alluvial_fertile,low,grapes,4.5,medium
+Gabes_oasis,alluvial_fertile,low,cactus,1.0,high
+Gabes_oasis,alluvial_fertile,low,lentil,3.0,high
+Gabes_oasis,alluvial_fertile,low,chickpea,3.0,high
+Gabes_oasis,alluvial_fertile,low,sunflower,4.0,medium
+Gabes_oasis,alluvial_fertile,low,sesame,3.5,high
+Gabes_urban,mixed,medium,olive,3.5,high
+Gabes_urban,mixed,medium,pistachio,2.8,high
+Gabes_urban,mixed,medium,date palm,5.5,high
+Gabes_urban,mixed,medium,barley,3.5,high
+Gabes_urban,mixed,medium,wheat,4.5,high
+Gabes_urban,mixed,medium,sorghum,4.0,high
+Gabes_urban,mixed,medium,moringa,3.8,high
+Gabes_urban,mixed,medium,neem,4.2,high
+Gabes_urban,mixed,medium,aloe vera,1.5,high
+Gabes_urban,mixed,medium,pomegranate,4.0,high
+Gabes_urban,mixed,medium,fig,3.5,high
+Gabes_urban,mixed,medium,cactus,1.0,high
+Gabes_urban,mixed,medium,lentil,3.0,high
+Gabes_urban,mixed,medium,chickpea,3.0,high
+Gabes_urban,mixed,medium,sesame,3.5,high
+Gabes_desert,arid_sandy,low,olive,3.5,high
+Gabes_desert,arid_sandy,low,pistachio,2.8,high
+Gabes_desert,arid_sandy,low,barley,3.5,high
+Gabes_desert,arid_sandy,low,sorghum,4.0,high
+Gabes_desert,arid_sandy,low,moringa,3.8,high
+Gabes_desert,arid_sandy,low,aloe vera,1.5,high
+Gabes_desert,arid_sandy,low,pomegranate,4.0,high
+Gabes_desert,arid_sandy,low,fig,3.5,high
+Gabes_desert,arid_sandy,low,cactus,1.0,high
+Gabes_desert,arid_sandy,low,lentil,3.0,high
+Gabes_desert,arid_sandy,low,chickpea,3.0,high
+Gabes_desert,arid_sandy,low,sunflower,4.0,medium
+Gabes_desert,arid_sandy,low,sesame,3.5,high
+Gabes_agriculture,alluvial_fertile,low,olive,3.5,high
+Gabes_agriculture,alluvial_fertile,low,pistachio,2.8,high
+Gabes_agriculture,alluvial_fertile,low,date palm,5.5,high
+Gabes_agriculture,alluvial_fertile,low,barley,3.5,high
+Gabes_agriculture,alluvial_fertile,low,wheat,4.5,high
+Gabes_agriculture,alluvial_fertile,low,alfalfa,7.5,medium
+Gabes_agriculture,alluvial_fertile,low,sorghum,4.0,high
+Gabes_agriculture,alluvial_fertile,low,moringa,3.8,high
+Gabes_agriculture,alluvial_fertile,low,neem,4.2,high
+Gabes_agriculture,alluvial_fertile,low,aloe vera,1.5,high
+Gabes_agriculture,alluvial_fertile,low,pomegranate,4.0,high
+Gabes_agriculture,alluvial_fertile,low,fig,3.5,high
+Gabes_agriculture,alluvial_fertile,low,grapes,4.5,medium
+Gabes_agriculture,alluvial_fertile,low,cactus,1.0,high
+Gabes_agriculture,alluvial_fertile,low,lentil,3.0,high
+Gabes_agriculture,alluvial_fertile,low,chickpea,3.0,high
+Gabes_agriculture,alluvial_fertile,low,sunflower,4.0,medium
+Gabes_agriculture,alluvial_fertile,low,sesame,3.5,high
+Gabes_mountain,rocky,low,olive,3.5,high
+Gabes_mountain,rocky,low,pistachio,2.8,high
+Gabes_mountain,rocky,low,date palm,5.5,high
+Gabes_mountain,rocky,low,barley,3.5,high
+Gabes_mountain,rocky,low,wheat,4.5,high
+Gabes_mountain,rocky,low,sorghum,4.0,high
+Gabes_mountain,rocky,low,moringa,3.8,high
+Gabes_mountain,rocky,low,neem,4.2,high
+Gabes_mountain,rocky,low,aloe vera,1.5,high
+Gabes_mountain,rocky,low,pomegranate,4.0,high
+Gabes_mountain,rocky,low,fig,3.5,high
+Gabes_mountain,rocky,low,cactus,1.0,high
+Gabes_mountain,rocky,low,lentil,3.0,high
+Gabes_mountain,rocky,low,chickpea,3.0,high
+Gabes_mountain,rocky,low,sesame,3.5,high
+Gabes_inland_plain,mixed,medium,olive,3.5,high
+Gabes_inland_plain,mixed,medium,pistachio,2.8,high
+Gabes_inland_plain,mixed,medium,date palm,5.5,high
+Gabes_inland_plain,mixed,medium,barley,3.5,high
+Gabes_inland_plain,mixed,medium,wheat,4.5,high
+Gabes_inland_plain,mixed,medium,sorghum,4.0,high
+Gabes_inland_plain,mixed,medium,moringa,3.8,high
+Gabes_inland_plain,mixed,medium,neem,4.2,high
+Gabes_inland_plain,mixed,medium,aloe vera,1.5,high
+Gabes_inland_plain,mixed,medium,pomegranate,4.0,high
+Gabes_inland_plain,mixed,medium,fig,3.5,high
+Gabes_inland_plain,mixed,medium,cactus,1.0,high
+Gabes_inland_plain,mixed,medium,lentil,3.0,high
+Gabes_inland_plain,mixed,medium,chickpea,3.0,high
+Gabes_inland_plain,mixed,medium,sesame,3.5,high
